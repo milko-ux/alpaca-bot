@@ -1,65 +1,175 @@
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import pandas as pd
-import alpaca_trade_api as tradeapi
 
 import config as cfg
 from signals import get_signal
-from executor import execute, api
+from executor import (
+    api, execute, get_open_positions, get_portfolio_value,
+    check_stop_take, MODE,
+)
+
+_last_portfolio_log = 0.0   # epoch-tid för senaste portfolio-logg
 
 
-def fetch_closes(symbol: str, limit: int = 100) -> pd.Series:
-    """Hämtar dagliga stängningspriser för en symbol."""
-    bars = api.get_bars(symbol, "1Day", limit=limit).df
-    if bars.empty:
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+
+def fetch_closes(symbol: str) -> pd.Series:
+    """Hämtar ~2 månaders daglig data via start/end."""
+    try:
+        end   = datetime.now(timezone.utc)
+        start = end - timedelta(days=90)
+        bars  = api.get_bars(
+            symbol, "1Day",
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            limit=cfg.BARS_NEEDED,
+            feed="iex",
+        ).df
+        if bars.empty:
+            return pd.Series(dtype=float)
+        return bars["close"].astype(float).reset_index(drop=True)
+    except Exception as e:
+        print(f"[main] FEL bars {symbol}: {e}")
         return pd.Series(dtype=float)
-    return bars["close"].astype(float)
 
+
+# ---------------------------------------------------------------------------
+# Market status
+# ---------------------------------------------------------------------------
 
 def is_market_open() -> bool:
     try:
-        clock = api.get_clock()
-        return clock.is_open
+        return api.get_clock().is_open
     except Exception:
         return False
 
 
-def run_loop() -> None:
+def next_open_in_seconds() -> int:
+    """Returnerar sekunder till nästa marknadsöppning (eller 0 om öppen)."""
+    try:
+        clock = api.get_clock()
+        if clock.is_open:
+            return 0
+        next_open = clock.next_open
+        # next_open är en sträng eller datetime beroende på SDK-version
+        if isinstance(next_open, str):
+            next_open = datetime.fromisoformat(next_open.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return max(0, int((next_open - now).total_seconds()))
+    except Exception:
+        return cfg.LOOP_INTERVAL_SEC
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+def log_portfolio() -> None:
+    global _last_portfolio_log
+    now = time.time()
+    if now - _last_portfolio_log < 3600:
+        return
+    _last_portfolio_log = now
+    val       = get_portfolio_value()
+    positions = get_open_positions()
+    ts        = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*55}")
-    print(f"[main] Loop — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"[main] Läge: {'PAPER (DRY-RUN)' if cfg.DRY_RUN else 'LIVE'}")
+    print(f"[portfolio] {ts}  |  Värde: ${val:,.2f}")
+    if positions:
+        for p in positions:
+            sign  = "+" if p["unrealized_pct"] >= 0 else ""
+            print(f"  {p['symbol']:5s}  qty={p['qty']}  entry=${p['avg_entry']:.2f}  "
+                  f"nu=${p['current']:.2f}  P/L={sign}{p['unrealized_pct']*100:.1f}%  "
+                  f"val=${p['market_val']:,.2f}")
+    else:
+        print("  (inga öppna positions)")
+    print(f"{'='*55}\n")
+
+
+def log_positions_summary(positions: list[dict]) -> None:
+    n = len(positions)
+    print(f"[main] Öppna positions: {n}/{cfg.MAX_POSITIONS}")
+    for p in positions:
+        sign = "+" if p["unrealized_pct"] >= 0 else ""
+        print(f"  {p['symbol']:5s}  {sign}{p['unrealized_pct']*100:.1f}%  "
+              f"entry=${p['avg_entry']:.2f}  nu=${p['current']:.2f}")
+
+
+# ---------------------------------------------------------------------------
+# Huvud-loop
+# ---------------------------------------------------------------------------
+
+def run_loop() -> None:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n{'='*55}")
+    print(f"[main] Loop — {now_str}  [{MODE}]")
     print(f"{'='*55}")
 
     if not is_market_open():
-        print("[main] Marknaden är stängd — hoppar över.")
+        secs = next_open_in_seconds()
+        print(f"[main] Marknaden är stängd — nästa öppning om ~{secs//3600}h {(secs%3600)//60}m")
         return
 
+    # Logga portfolio varje timme
+    log_portfolio()
+
+    # Hämta öppna positions och kolla stop/take (fallback)
+    positions = get_open_positions()
+    log_positions_summary(positions)
+    check_stop_take(positions)
+
+    # Kör signaler för varje symbol
     for symbol in cfg.SYMBOLS:
         closes = fetch_closes(symbol)
         if closes.empty:
-            print(f"[main] {symbol}: kunde inte hämta data.")
+            print(f"[main] {symbol}: ingen data.")
             continue
 
         signal = get_signal(symbol, closes, cfg)
-        rsi_v  = signal["rsi"]
-        score  = signal["score"]
-        bb_pct = signal["bb"]["pct"] * 100
-        macd_h = signal["macd"]["histogram"]
+
+        # Logga indikatorer
+        rsi_s = f"RSI={signal['rsi']:.1f}" if signal["rsi"] else "RSI=N/A"
+        macd_s = f"MACD={'bullish' if signal['macd'].get('bullish') else 'bearish'}"
+        bb_pct = signal["bb"].get("pct", 0) * 100
+        buy_s  = signal["buy_signals"]
+        sell_s = signal["sell_signals"]
 
         print(
-            f"[main] {symbol:5s}  RSI={rsi_v:5.1f}  MACD_hist={macd_h:+.3f}  "
-            f"BB={bb_pct:5.1f}%  score={score:+d}  → {signal['direction']}"
+            f"[main] {symbol:5s}  {rsi_s:12s}  {macd_s:14s}  BB={bb_pct:5.1f}%  "
+            f"score={signal['score']:+d}  → {signal['direction']}"
         )
+        if buy_s:
+            print(f"         BUY-signaler:  {', '.join(buy_s)}")
+        if sell_s:
+            print(f"         SELL-signaler: {', '.join(sell_s)}")
 
         execute(signal)
 
 
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    print(f"[main] Alpaca-bot startar ({'PAPER' if cfg.DRY_RUN else 'LIVE'})")
-    print(f"[main] Symboler: {cfg.SYMBOLS}")
-    print(f"[main] Insats per trade: ${cfg.TRADE_AMOUNT_USD:.2f}")
+    val = get_portfolio_value()
+    print(f"[main] Alpaca-bot startar [{MODE}]")
+    print(f"[main] Portfolio: ${val:,.2f}")
+    print(f"[main] Symboler:  {cfg.SYMBOLS}")
+    print(f"[main] Per trade: {cfg.POSITION_PCT*100:.0f}% av portfolio "
+          f"(~${val*cfg.POSITION_PCT:,.0f})")
+    print(f"[main] Stop-loss: -{cfg.STOP_LOSS_PCT*100:.0f}%  "
+          f"Take-profit: +{cfg.TAKE_PROFIT_PCT*100:.0f}%")
+    print(f"[main] Max positions: {cfg.MAX_POSITIONS}  "
+          f"Min signaler: {cfg.MIN_SIGNALS}/3")
     print(f"[main] Intervall: {cfg.LOOP_INTERVAL_SEC}s\n")
+
+    # Logga portfolio direkt vid start
+    _last_portfolio_log = 0.0
+    log_portfolio()
 
     while True:
         run_loop()
