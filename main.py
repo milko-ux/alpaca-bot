@@ -1,7 +1,6 @@
 import time
 from datetime import datetime, timezone, timedelta
 
-import pandas as pd
 
 import config as cfg
 from signals import get_signal
@@ -17,24 +16,33 @@ _last_portfolio_log = 0.0   # epoch-tid för senaste portfolio-logg
 # Data
 # ---------------------------------------------------------------------------
 
-def fetch_closes(symbol: str) -> pd.Series:
-    """Hämtar ~2 månaders daglig data via start/end."""
+def fetch_bars(symbol: str) -> list[dict]:
+    """Hämtar ~2 månaders daglig OHLCV-data, returnerar lista av dicts (äldst först)."""
     try:
         end   = datetime.now(timezone.utc)
         start = end - timedelta(days=90)
-        bars  = api.get_bars(
+        df = api.get_bars(
             symbol, "1Day",
             start=start.strftime("%Y-%m-%d"),
             end=end.strftime("%Y-%m-%d"),
             limit=cfg.BARS_NEEDED,
             feed="iex",
         ).df
-        if bars.empty:
-            return pd.Series(dtype=float)
-        return bars["close"].astype(float).reset_index(drop=True)
+        if df.empty:
+            return []
+        return [
+            {
+                "open":   float(row["open"]),
+                "high":   float(row["high"]),
+                "low":    float(row["low"]),
+                "close":  float(row["close"]),
+                "volume": float(row["volume"]),
+            }
+            for _, row in df.iterrows()
+        ]
     except Exception as e:
         print(f"[main] FEL bars {symbol}: {e}")
-        return pd.Series(dtype=float)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -124,23 +132,24 @@ def run_loop() -> None:
 
     # Kör signaler för varje symbol
     for symbol in cfg.SYMBOLS:
-        closes = fetch_closes(symbol)
-        if closes.empty:
+        bars = fetch_bars(symbol)
+        if not bars:
             print(f"[main] {symbol}: ingen data.")
             continue
 
-        signal = get_signal(symbol, closes, cfg)
+        signal = get_signal(symbol, bars, cfg)
 
         # Logga indikatorer
-        rsi_s = f"RSI={signal['rsi']:.1f}" if signal["rsi"] else "RSI=N/A"
-        macd_s = f"MACD={'bullish' if signal['macd'].get('bullish') else 'bearish'}"
-        bb_pct = signal["bb"].get("pct", 0) * 100
-        buy_s  = signal["buy_signals"]
-        sell_s = signal["sell_signals"]
+        rsi_s   = f"RSI={signal['rsi']:.1f}" if signal["rsi"] else "RSI=N/A"
+        macd_s  = f"MACD={'bullish' if signal['macd'].get('bullish') else 'bearish'}"
+        bb_pct  = signal["bb"].get("pct", 0) * 100
+        pat_s   = f"  [{signal['pattern']}]" if signal["pattern"] else ""
+        buy_s   = signal["buy_signals"]
+        sell_s  = signal["sell_signals"]
 
         print(
             f"[main] {symbol:5s}  {rsi_s:12s}  {macd_s:14s}  BB={bb_pct:5.1f}%  "
-            f"score={signal['score']:+d}  → {signal['direction']}"
+            f"score={signal['score']:+d}  → {signal['direction']}{pat_s}"
         )
         if buy_s:
             print(f"         BUY-signaler:  {', '.join(buy_s)}")
