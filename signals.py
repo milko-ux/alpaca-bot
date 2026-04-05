@@ -14,8 +14,10 @@ import numpy as np
 from patterns import (
     detect_morning_star,
     detect_hammer,
+    detect_bullish_engulfing,
     detect_dark_cloud_cover,
     detect_tweezer_top,
+    detect_evening_star,
 )
 
 
@@ -137,8 +139,9 @@ def get_signal(symbol: str, bars: list[dict], cfg) -> dict:
     # ------------------------------------------------------------------
 
     # BUY-mönster
-    for pattern_name, detector in [("Morning Star", detect_morning_star),
-                                    ("Hammer",       detect_hammer)]:
+    for pattern_name, detector in [("Morning Star",      detect_morning_star),
+                                    ("Hammer",            detect_hammer),
+                                    ("Bullish Engulfing", detect_bullish_engulfing)]:
         if detector(bars):
             ok, confirms = _confirmed_buy(rsi, macd, cfg)
             if ok:
@@ -155,7 +158,8 @@ def get_signal(symbol: str, bars: list[dict], cfg) -> dict:
                 }
 
     # SELL-mönster
-    for pattern_name, detector in [("Dark Cloud Cover", detect_dark_cloud_cover),
+    for pattern_name, detector in [("Evening Star",    detect_evening_star),
+                                    ("Dark Cloud Cover", detect_dark_cloud_cover),
                                     ("Tweezer Top",      detect_tweezer_top)]:
         if detector(bars):
             ok, confirms = _confirmed_sell(rsi, macd, cfg)

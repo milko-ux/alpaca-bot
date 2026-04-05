@@ -1,3 +1,4 @@
+import math
 import alpaca_trade_api as tradeapi
 from datetime import datetime
 from config import (
@@ -80,6 +81,15 @@ def get_position_qty(symbol: str) -> float:
         return 0.0
 
 
+def has_pending_order(symbol: str) -> bool:
+    """Returnerar True om det finns en öppen (ej fylld) order för symbolen."""
+    try:
+        orders = api.list_orders(status="open", symbols=[symbol])
+        return len(orders) > 0
+    except Exception:
+        return False
+
+
 def cancel_existing_orders(symbol: str) -> None:
     try:
         orders = api.list_orders(status="open", symbols=[symbol])
@@ -111,7 +121,10 @@ def buy(symbol: str, signal: dict) -> dict | None:
     price       = get_latest_price(symbol)
     if price <= 0:
         return None
-    qty         = round(notional / price, 6)
+    qty         = math.floor(notional / price)
+    if qty < 1:
+        print(f"[executor] {symbol}: qty < 1 (${notional:.2f} / ${price:.2f}) — hoppar.")
+        return None
     limit_price = round(price * 1.002, 2)   # limit 0.2% över senaste pris
     stop_price  = round(price * (1 - STOP_LOSS_PCT), 2)
     take_price  = round(price * (1 + TAKE_PROFIT_PCT), 2)
@@ -194,12 +207,16 @@ def check_stop_take(positions: list[dict]) -> None:
     for pos in positions:
         sym  = pos["symbol"]
         pct  = pos["unrealized_pct"]
-        if pct <= -STOP_LOSS_PCT:
-            print(f"[executor] {sym}: STOP-LOSS triggrad ({pct*100:.1f}%)")
-            sell(sym, reason=f"stop-loss {pct*100:.1f}%")
-        elif pct >= TAKE_PROFIT_PCT:
-            print(f"[executor] {sym}: TAKE-PROFIT triggrad ({pct*100:.1f}%)")
-            sell(sym, reason=f"take-profit {pct*100:.1f}%")
+        if pct <= -STOP_LOSS_PCT or pct >= TAKE_PROFIT_PCT:
+            if has_pending_order(sym):
+                print(f"[executor] {sym}: bracket order aktiv — hoppar fallback stop/take.")
+                continue
+            if pct <= -STOP_LOSS_PCT:
+                print(f"[executor] {sym}: STOP-LOSS triggrad ({pct*100:.1f}%)")
+                sell(sym, reason=f"stop-loss {pct*100:.1f}%")
+            else:
+                print(f"[executor] {sym}: TAKE-PROFIT triggrad ({pct*100:.1f}%)")
+                sell(sym, reason=f"take-profit {pct*100:.1f}%")
 
 
 # ---------------------------------------------------------------------------

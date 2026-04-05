@@ -1,6 +1,5 @@
 import time
-from datetime import datetime, timezone, timedelta
-
+from datetime import datetime, timezone, timedelta, date
 
 import config as cfg
 from signals import get_signal
@@ -9,7 +8,8 @@ from executor import (
     check_stop_take, MODE,
 )
 
-_last_portfolio_log = 0.0   # epoch-tid för senaste portfolio-logg
+_last_portfolio_log = 0.0        # epoch-tid för senaste portfolio-logg
+_last_signal_date: dict[str, date] = {}  # symbol → datum för senaste signalkörning
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +130,13 @@ def run_loop() -> None:
     log_positions_summary(positions)
     check_stop_take(positions)
 
-    # Kör signaler för varje symbol
+    # Kör signaler för varje symbol — max en gång per handelsdag
+    today = date.today()
     for symbol in cfg.SYMBOLS:
+        if _last_signal_date.get(symbol) == today:
+            print(f"[main] {symbol}: signal redan körd idag — hoppar.")
+            continue
+
         bars = fetch_bars(symbol)
         if not bars:
             print(f"[main] {symbol}: ingen data.")
@@ -157,6 +162,7 @@ def run_loop() -> None:
             print(f"         SELL-signaler: {', '.join(sell_s)}")
 
         execute(signal)
+        _last_signal_date[symbol] = today
 
 
 # ---------------------------------------------------------------------------
