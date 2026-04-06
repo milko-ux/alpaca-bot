@@ -17,7 +17,7 @@ MAX_POSITIONS       = 5      # max antal öppna positions
 POSITION_PCT        = 0.10   # 10% av portfolio per trade
 STOP_LOSS_PCT       = 0.05   # -5% stop-loss
 TAKE_PROFIT_PCT     = 0.15   # +15% take-profit
-MIN_SIGNALS         = 2      # minst 2 av 3 indikatorer för trade
+MIN_SIGNALS         = 1      # minst 1 av 3 indikatorer för trade
 
 # Tekniska indikatorer
 RSI_PERIOD          = 14

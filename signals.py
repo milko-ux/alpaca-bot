@@ -89,7 +89,7 @@ def _confirmed_buy(rsi: float, macd: dict, cfg) -> tuple[bool, list[str]]:
     elif rsi < cfg.RSI_OVERSOLD:
         confirms.append(f"RSI oversold={rsi:.1f}")
     # Kräver RSI-utrymme OCH minst en MACD/RSI-bekräftelse
-    ok = rsi < cfg.RSI_OVERBOUGHT and (macd["bullish"] or rsi < cfg.RSI_OVERSOLD)
+    ok = rsi < cfg.RSI_OVERBOUGHT and (macd["bullish"] or rsi < 50)
     return ok, confirms
 
 
@@ -106,7 +106,7 @@ def _confirmed_sell(rsi: float, macd: dict, cfg) -> tuple[bool, list[str]]:
         confirms.append("MACD bearish")
     elif rsi > cfg.RSI_OVERBOUGHT:
         confirms.append(f"RSI overbought={rsi:.1f}")
-    ok = rsi > cfg.RSI_OVERSOLD and (not macd["bullish"] or rsi > cfg.RSI_OVERBOUGHT)
+    ok = rsi > cfg.RSI_OVERSOLD and (not macd["bullish"] or rsi > 50)
     return ok, confirms
 
 
